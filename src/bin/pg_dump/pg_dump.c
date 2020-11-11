@@ -6160,6 +6160,7 @@ getTables(Archive *fout, int *numTables)
 	int			i_ispartition;
 	int			i_partbound;
 	int			i_amname;
+	int			i_isivm;
 
 	/*
 	 * Find all the tables and table-like objects.
@@ -6191,6 +6192,7 @@ getTables(Archive *fout, int *numTables)
 		char	   *ispartition = "false";
 		char	   *partbound = "NULL";
 		char	   *relhasoids = "c.relhasoids";
+		char	   *isivm = "false";
 
 		PQExpBuffer acl_subquery = createPQExpBuffer();
 		PQExpBuffer racl_subquery = createPQExpBuffer();
@@ -6217,6 +6219,10 @@ getTables(Archive *fout, int *numTables)
 		/* In PG12 upwards WITH OIDS does not exist anymore. */
 		if (fout->remoteVersion >= 120000)
 			relhasoids = "'f'::bool";
+
+		/* The information about incremental view maintenance */
+		if (fout->remoteVersion >= 140000)
+			isivm = "c.relisivm";
 
 		/*
 		 * Left join to pick up dependency info linking sequences to their
@@ -6275,7 +6281,8 @@ getTables(Archive *fout, int *numTables)
 						  "AS changed_acl, "
 						  "%s AS partkeydef, "
 						  "%s AS ispartition, "
-						  "%s AS partbound "
+						  "%s AS partbound, "
+						  "%s AS isivm "
 						  "FROM pg_class c "
 						  "LEFT JOIN pg_depend d ON "
 						  "(c.relkind = '%c' AND "
@@ -6304,6 +6311,7 @@ getTables(Archive *fout, int *numTables)
 						  partkeydef,
 						  ispartition,
 						  partbound,
+						  isivm,
 						  RELKIND_SEQUENCE,
 						  RELKIND_PARTITIONED_TABLE,
 						  RELKIND_RELATION, RELKIND_SEQUENCE,
@@ -6357,7 +6365,8 @@ getTables(Archive *fout, int *numTables)
 						  "NULL AS changed_acl, "
 						  "NULL AS partkeydef, "
 						  "false AS ispartition, "
-						  "NULL AS partbound "
+						  "NULL AS partbound, "
+						  "false AS isivm "
 						  "FROM pg_class c "
 						  "LEFT JOIN pg_depend d ON "
 						  "(c.relkind = '%c' AND "
@@ -6410,7 +6419,8 @@ getTables(Archive *fout, int *numTables)
 						  "NULL AS changed_acl, "
 						  "NULL AS partkeydef, "
 						  "false AS ispartition, "
-						  "NULL AS partbound "
+						  "NULL AS partbound, "
+						  "false AS isivm "
 						  "FROM pg_class c "
 						  "LEFT JOIN pg_depend d ON "
 						  "(c.relkind = '%c' AND "
@@ -6463,7 +6473,8 @@ getTables(Archive *fout, int *numTables)
 						  "NULL AS changed_acl, "
 						  "NULL AS partkeydef, "
 						  "false AS ispartition, "
-						  "NULL AS partbound "
+						  "NULL AS partbound, "
+						  "false AS isivm "
 						  "FROM pg_class c "
 						  "LEFT JOIN pg_depend d ON "
 						  "(c.relkind = '%c' AND "
@@ -6514,7 +6525,8 @@ getTables(Archive *fout, int *numTables)
 						  "NULL AS changed_acl, "
 						  "NULL AS partkeydef, "
 						  "false AS ispartition, "
-						  "NULL AS partbound "
+						  "NULL AS partbound, "
+						  "false AS isivm "
 						  "FROM pg_class c "
 						  "LEFT JOIN pg_depend d ON "
 						  "(c.relkind = '%c' AND "
@@ -6563,7 +6575,8 @@ getTables(Archive *fout, int *numTables)
 						  "NULL AS changed_acl, "
 						  "NULL AS partkeydef, "
 						  "false AS ispartition, "
-						  "NULL AS partbound "
+						  "NULL AS partbound, "
+						  "false AS isivm "
 						  "FROM pg_class c "
 						  "LEFT JOIN pg_depend d ON "
 						  "(c.relkind = '%c' AND "
@@ -6611,7 +6624,8 @@ getTables(Archive *fout, int *numTables)
 						  "NULL AS changed_acl, "
 						  "NULL AS partkeydef, "
 						  "false AS ispartition, "
-						  "NULL AS partbound "
+						  "NULL AS partbound, "
+						  "false AS isivm "
 						  "FROM pg_class c "
 						  "LEFT JOIN pg_depend d ON "
 						  "(c.relkind = '%c' AND "
@@ -6659,7 +6673,8 @@ getTables(Archive *fout, int *numTables)
 						  "NULL AS changed_acl, "
 						  "NULL AS partkeydef, "
 						  "false AS ispartition, "
-						  "NULL AS partbound "
+						  "NULL AS partbound, "
+						  "false AS isivm "
 						  "FROM pg_class c "
 						  "LEFT JOIN pg_depend d ON "
 						  "(c.relkind = '%c' AND "
@@ -6706,7 +6721,8 @@ getTables(Archive *fout, int *numTables)
 						  "NULL AS changed_acl, "
 						  "NULL AS partkeydef, "
 						  "false AS ispartition, "
-						  "NULL AS partbound "
+						  "NULL AS partbound, "
+						  "false AS isivm "
 						  "FROM pg_class c "
 						  "LEFT JOIN pg_depend d ON "
 						  "(c.relkind = '%c' AND "
@@ -6778,6 +6794,7 @@ getTables(Archive *fout, int *numTables)
 	i_ispartition = PQfnumber(res, "ispartition");
 	i_partbound = PQfnumber(res, "partbound");
 	i_amname = PQfnumber(res, "amname");
+	i_isivm = PQfnumber(res, "isivm");
 
 	if (dopt->lockWaitTimeout)
 	{
@@ -6890,6 +6907,9 @@ getTables(Archive *fout, int *numTables)
 
 		/* foreign server */
 		tblinfo[i].foreign_server = atooid(PQgetvalue(res, i, i_foreignserver));
+
+		/* Incremental view maintenance information */
+		tblinfo[i].isivm = (strcmp(PQgetvalue(res, i, i_isivm), "t") == 0);
 
 		/*
 		 * Read-lock target tables to make sure they aren't DROPPED or altered
@@ -15770,9 +15790,11 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 			binary_upgrade_set_pg_class_oids(fout, q,
 											 tbinfo->dobj.catId.oid, false);
 
-		appendPQExpBuffer(q, "CREATE %s%s %s",
+		appendPQExpBuffer(q, "CREATE %s%s%s %s",
 						  tbinfo->relpersistence == RELPERSISTENCE_UNLOGGED ?
 						  "UNLOGGED " : "",
+						  tbinfo->relkind == RELKIND_MATVIEW && tbinfo->isivm ?
+						  "INCREMENTAL " : "",
 						  reltypename,
 						  qualrelname);
 
